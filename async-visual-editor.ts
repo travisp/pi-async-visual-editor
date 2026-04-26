@@ -2,33 +2,28 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CustomEditor, type ExtensionAPI, type ExtensionCommandContext, type KeybindingsManager } from "@mariozechner/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@mariozechner/pi-coding-agent";
 import { matchesKey, truncateToWidth, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
 
-type WaitingResult = "escape" | "done";
-type ActiveEditor = {
-	child?: ChildProcess;
-	dismissWaitingUI?: () => void;
-};
+type CancelOpenEditor = () => void;
+type RegisterCancelOpenEditor = (cancel: CancelOpenEditor | undefined) => void;
 
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function startCommand(command: string): { child: ChildProcess; exit: Promise<number | null> } {
-	const child = spawn(command, { shell: true, stdio: "ignore" });
-	const exit = new Promise<number | null>((resolve, reject) => {
+function waitForExit(child: ChildProcess): Promise<number | null> {
+	return new Promise((resolve, reject) => {
 		child.on("error", reject);
 		child.on("exit", resolve);
 	});
-	return { child, exit };
 }
 
-function showWaitingUI(ctx: ExtensionCommandContext): { promise: Promise<WaitingResult>; dismiss: () => void } {
-	let finish: (result: WaitingResult) => void = () => {};
+function showWaitingUI(ctx: ExtensionContext): { closed: Promise<void>; close: () => void } {
+	let closeUI: () => void = () => {};
 
-	const promise = ctx.ui.custom<WaitingResult>((_tui, theme, _keybindings, done) => {
-		finish = done;
+	const closed = ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+		closeUI = () => done();
 		return {
 			render(width: number): string[] {
 				const innerWidth = Math.max(24, width - 2);
@@ -48,21 +43,23 @@ function showWaitingUI(ctx: ExtensionCommandContext): { promise: Promise<Waiting
 				];
 			},
 			handleInput(data: string): void {
-				if (matchesKey(data, "escape")) finish("escape");
+				if (matchesKey(data, "escape")) closeUI();
 			},
 			invalidate(): void {},
 		};
 	});
 
-	return { promise, dismiss: () => finish("done") };
+	return { closed, close: () => closeUI() };
 }
 
 async function editText(
-	ctx: ExtensionCommandContext,
-	command: string,
+	ctx: ExtensionContext,
 	initialText: string,
-	activeEditor: ActiveEditor,
+	registerCancelOpenEditor: RegisterCancelOpenEditor,
 ): Promise<string | undefined> {
+	const command = process.env.VISUAL ?? process.env.EDITOR;
+	if (!command) throw new Error("No editor configured. Set $VISUAL or $EDITOR.");
+
 	const dir = await mkdtemp(join(tmpdir(), "pi-async-visual-editor-"));
 	const file = join(dir, "prompt.md");
 
@@ -70,63 +67,65 @@ async function editText(
 		await writeFile(file, initialText, "utf8");
 
 		const waitingUI = showWaitingUI(ctx);
-		const { child, exit } = startCommand(`${command} ${shellQuote(file)}`);
-		activeEditor.child = child;
-		activeEditor.dismissWaitingUI = waitingUI.dismiss;
+		const child = spawn(`${command} ${shellQuote(file)}`, { shell: true, stdio: "ignore" });
+		registerCancelOpenEditor(() => {
+			waitingUI.close();
+			child.kill();
+		});
 
-		const result = await Promise.race([
-			exit.then((code) => ({ type: "editor" as const, code })),
-			waitingUI.promise.then((reason) => ({ type: "ui" as const, reason })),
-		]);
+		const exitCode = await Promise.race([waitForExit(child), waitingUI.closed.then(() => undefined)]);
 
-		if (result.type === "ui") {
-			if (result.reason === "escape") child.kill();
+		if (exitCode === undefined) {
+			child.kill();
 			return undefined;
 		}
 
-		waitingUI.dismiss();
-		await waitingUI.promise;
+		waitingUI.close();
+		await waitingUI.closed;
 
-		if (result.code !== 0) return undefined;
+		if (exitCode !== 0) return undefined;
 		return (await readFile(file, "utf8")).replace(/\n$/, "");
 	} finally {
-		activeEditor.child = undefined;
-		activeEditor.dismissWaitingUI = undefined;
+		registerCancelOpenEditor(undefined);
 		await rm(dir, { recursive: true, force: true });
 	}
 }
 
 class AsyncVisualEditor extends CustomEditor {
 	private isEditorOpen = false;
+	private readonly ctx: ExtensionContext;
+	private readonly registerCancelOpenEditor: RegisterCancelOpenEditor;
 
 	constructor(
-		private readonly tui: TUI,
+		tui: TUI,
 		theme: EditorTheme,
 		keybindings: KeybindingsManager,
-		private readonly openEditor: (text: string) => Promise<string | undefined>,
-		private readonly showError: (message: string) => void,
+		ctx: ExtensionContext,
+		registerCancelOpenEditor: RegisterCancelOpenEditor,
 	) {
 		super(tui, theme, keybindings);
+		this.ctx = ctx;
+		this.registerCancelOpenEditor = registerCancelOpenEditor;
 	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, "ctrl+g")) {
-			void this.handleExternalEditor();
+			void this.openExternalEditor();
 			return;
 		}
 
 		super.handleInput(data);
 	}
 
-	private async handleExternalEditor(): Promise<void> {
+	private async openExternalEditor(): Promise<void> {
 		if (this.isEditorOpen) return;
 		this.isEditorOpen = true;
 
 		try {
-			const editedText = await this.openEditor(this.getText());
+			const editedText = await editText(this.ctx, this.getText(), this.registerCancelOpenEditor);
 			if (editedText !== undefined) this.setText(editedText);
 		} catch (error) {
-			this.showError(error instanceof Error ? error.message : String(error));
+			this.ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 		} finally {
 			this.isEditorOpen = false;
 			this.tui.requestRender(true);
@@ -135,29 +134,19 @@ class AsyncVisualEditor extends CustomEditor {
 }
 
 export default function (pi: ExtensionAPI) {
-	const activeEditor: ActiveEditor = {};
+	let cancelOpenEditor: CancelOpenEditor | undefined;
+	const registerCancelOpenEditor: RegisterCancelOpenEditor = (cancel) => {
+		cancelOpenEditor = cancel;
+	};
 
 	pi.on("session_start", (_event, ctx) => {
 		ctx.ui.setEditorComponent(
-			(tui, theme, keybindings) =>
-				new AsyncVisualEditor(
-					tui,
-					theme,
-					keybindings,
-					(text) => {
-						const command = process.env.VISUAL || process.env.EDITOR;
-						if (!command) throw new Error("No editor configured. Set $VISUAL or $EDITOR.");
-						return editText(ctx, command, text, activeEditor);
-					},
-					(message) => ctx.ui.notify(message, "error"),
-				),
+			(tui, theme, keybindings) => new AsyncVisualEditor(tui, theme, keybindings, ctx, registerCancelOpenEditor),
 		);
 	});
 
 	pi.on("session_shutdown", () => {
-		activeEditor.dismissWaitingUI?.();
-		activeEditor.child?.kill();
-		activeEditor.dismissWaitingUI = undefined;
-		activeEditor.child = undefined;
+		cancelOpenEditor?.();
+		cancelOpenEditor = undefined;
 	});
 }
