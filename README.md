@@ -1,25 +1,49 @@
-# pi async-visual-editor
+# pi async visual editor
 
-A pi extension that replaces `Ctrl+G` with an async external-editor flow.
+A very simple pi extension that makes `Ctrl+G` open your external editor asynchronously.
 
-## Why?
+Pi's built-in `Ctrl+G` opens `$VISUAL`/`$EDITOR`, but it stops pi's TUI until the editor exits. That is fine for an editor running in the same terminal pane. It is awkward for GUI editors, cmux splits, tmux popups, or anything else that opens outside pi's pane: pi cannot redraw while you are editing, so resizing the terminal can leave pi hard to read.
 
-Pi's built-in `Ctrl+G` stops the TUI while `$VISUAL` or `$EDITOR` runs. If you are using an external editor and opening it results in pi getting resized, then pi will no longer be legible because the TUI won't redraw. For my editor, I have used both the Aerospace window tiling manager with a GUI text editor (which will automatically resize my pi terminal) and also used a cmux wrapper that opens vim in a pane to the right. In both of those cases, I lose my ability to scroll through pi while I'm typing my prompt.
+This extension keeps pi active while your editor is open. It uses pi's built-in editor component and replaces only the `Ctrl+G` external-editor handler with an async version. When you press `Ctrl+G`, pi still hands the current input to `$VISUAL` or `$EDITOR` as a temporary Markdown file and reads the file back after the editor exits successfully. The difference is that pi stays alive and shows a boxed waiting message while the editor is open.
 
-This extension keeps pi alive, shows a waiting UI, starts the editor asynchronously, and loads the edited file back into pi's input when the editor exits successfully.
+Use this with editors that open outside pi's terminal pane and wait until editing is complete, such as `code --wait`, `zed --wait`, a cmux split wrapper, or a terminal multiplexer popup.
 
-Use this with editors or wrapper scripts that open outside pi's own terminal pane, such as a GUI editor or a cmux split. Do not use plain same-pane `vim`; it may compete with pi for the same terminal, and there's really no purpose for this extension if that's what you are doing.
+Do not use this with plain same-pane `vim`/`nano`. Those editors need to control the same terminal pi is using, and pi's built-in `Ctrl+G` is the better fit for that case.
+
+## Install from GitHub
+
+Install globally:
+
+```bash
+pi install git:github.com/travisp/pi-async-visual-editor
+```
+
+Try it for one pi run without installing:
+
+```bash
+pi -e git:github.com/travisp/pi-async-visual-editor
+```
 
 ## Usage
 
-Set `VISUAL` or `EDITOR` to a command that waits until editing is complete:
+Set `VISUAL` or `EDITOR` to a command that waits until editing is complete, then start pi.
+
+For VS Code:
 
 ```bash
 VISUAL="code --wait"
 ```
 
+For Zed:
+
+```bash
+VISUAL="zed --wait"
+```
+
+You can also write a wrapper script to open a pane to the right in your favorite terminal emulator (ask pi for help).
+
 Then press `Ctrl+G` in pi.
 
-The command receives the temporary Markdown file path as its final argument. If it exits with status `0`, the file content replaces pi's current input. Non-zero exits leave pi's input unchanged.
+The editor command receives the temporary Markdown file path as its final argument. If the command exits with status `0`, the file content replaces pi's current input. If it exits with a non-zero status, pi leaves the input unchanged.
 
-While the editor is open, pi shows a boxed waiting message. Press Escape in pi to cancel and kill the editor process (if possible).
+While the editor is open, pi shows a boxed waiting message. Press Escape in pi to cancel waiting and kill the spawned editor process if possible. Some (most?) GUI editors may keep their app window open after the CLI process is killed.

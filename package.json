@@ -1,0 +1,30 @@
+{
+  "name": "pi-async-visual-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension that replaces Ctrl+G with an async external-editor flow.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/travisp/pi-async-visual-editor.git"
+  },
+  "homepage": "https://github.com/travisp/pi-async-visual-editor#readme",
+  "bugs": {
+    "url": "https://github.com/travisp/pi-async-visual-editor/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "editor"
+  ],
+  "pi": {
+    "extensions": [
+      "./async-visual-editor.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  }
+}
