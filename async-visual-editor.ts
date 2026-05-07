@@ -2,8 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@mariozechner/pi-coding-agent";
-import { matchesKey, truncateToWidth, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 
 type CancelOpenEditor = () => void;
 type RegisterCancelOpenEditor = (cancel: CancelOpenEditor | undefined) => void;
